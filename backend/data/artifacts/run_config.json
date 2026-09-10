@@ -1,0 +1,7 @@
+{
+  "parser": "section-aware-v2",
+  "embedding_model": "BAAI/bge-m3",
+  "chunk_size": 220,
+  "chunk_overlap": 40,
+  "min_chunk": 40
+}
