@@ -1,0 +1,26 @@
+# Python environments, caches, and local configuration
+.venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Secrets
+.env
+**/.env
+!.env.example
+
+# Generated vector database and locally copied notebook artifacts
+backend/data/vector_store/*
+!backend/data/vector_store/.gitkeep
+backend/data/artifacts/*
+!backend/data/artifacts/.gitkeep
+/artifacts/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
