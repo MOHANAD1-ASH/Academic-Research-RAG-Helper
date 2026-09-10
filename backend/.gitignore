@@ -1,0 +1,9 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+data/vector_store/
+data/pdfs/
+data/artifacts/*.json
+data/artifacts/*.npy
