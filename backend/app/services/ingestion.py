@@ -364,6 +364,10 @@ class IngestionService:
 
     def ingest(self, data: bytes, filename: str, source_url: str = "") -> dict[str, Any]:
         with self._lock:
+            # Repair metadata for PDFs already on disk before checking whether
+            # the incoming bytes are duplicates. This avoids asking the user
+            # to restart the backend after a partial or older ingestion.
+            self._reconcile_library()
             return self._ingest_locked(data, filename, source_url.strip())
 
     def _ingest_locked(self, data: bytes, filename: str, source_url: str = "") -> dict[str, Any]:
@@ -377,10 +381,14 @@ class IngestionService:
             recovered = self._recover_duplicate(sha, source_url)
             if recovered:
                 return recovered
-            return {
-                "ok": False,
-                "message": "This PDF already exists on disk, but its index is inconsistent. Restart the backend to run automatic reconciliation before uploading it again.",
-            }
+            # The file is an orphan: it exists on disk, but there is no
+            # reliable paper/chunk record for it. Remove only this exact
+            # duplicate so the normal ingestion path can rebuild the index
+            # from the uploaded bytes in the same request.
+            orphan = self._pdf_for_hash(sha)
+            if orphan is not None:
+                orphan.unlink(missing_ok=True)
+                LOGGER.warning("Removed orphaned PDF before automatic reindex: %s", orphan)
 
         tmp = self.pdfs_dir / f".__tmp_{sha[:16]}.pdf"
         final_path: Path | None = None

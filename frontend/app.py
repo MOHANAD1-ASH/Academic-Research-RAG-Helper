@@ -95,7 +95,18 @@ def cards(items: list[dict[str, Any]]) -> str:
 
 
 def nav(page: str):
-    return tuple(gr.update(visible=name == page) for name in PAGES)
+    """Navigate between pages and refresh the paper selector from the backend.
+
+    The selector used to be created once from the module-level PAPERS snapshot,
+    so papers uploaded after the frontend started were visible in Library but
+    missing from Ask the corpus. Refresh the shared paper list whenever the user
+    navigates, especially into Research.
+    """
+    global PAPERS
+    PAPERS = load_papers()
+    return tuple(gr.update(visible=name == page) for name in PAGES) + (
+        gr.update(choices=choices(), value=None),
+    )
 
 
 def library_search(query: str):
@@ -107,7 +118,7 @@ def library_search(query: str):
 def refresh_library():
     global PAPERS
     PAPERS = load_papers()
-    return cards(PAPERS), count_label()
+    return cards(PAPERS), count_label(), gr.update(choices=choices(), value=None)
 
 
 def ask(question: str, history: list[dict[str, str]], scope: str, paper_id: str):
@@ -222,13 +233,13 @@ def build_app() -> gr.Blocks:
                             gr.HTML("<div class='eyebrow'>What happens next</div><ol class='steps'><li><b class='step-no'>01</b><div><strong>Validate</strong><span>Confirm the file is a readable PDF.</span></div></li><li><b class='step-no'>02</b><div><strong>Extract</strong><span>Read metadata and document text.</span></div></li><li><b class='step-no'>03</b><div><strong>Index</strong><span>Make passages available to retrieval.</span></div></li><li><b class='step-no'>04</b><div><strong>Protect</strong><span>Detect existing papers before adding.</span></div></li></ol><div class='upload-note'>Already in the library? You will see a clear duplicate message instead of creating a second record.</div>")
         pages = [home, research, library, upload]
         for button, page in [(nav_home, "home"), (nav_research, "research"), (nav_library, "library"), (nav_upload, "upload"), (start, "research"), (explore, "library")]:
-            button.click(lambda p=page: nav(p), outputs=pages)
+            button.click(lambda p=page: nav(p), outputs=pages + [paper_select])
         question.submit(ask, inputs=[question, chatbot, scope, paper_select], outputs=[chatbot, sources, trace, question])
         ask_btn.click(ask, inputs=[question, chatbot, scope, paper_select], outputs=[chatbot, sources, trace, question])
         clear_btn.click(clear_chat, outputs=[chatbot, sources, trace, question])
         scope.change(lambda value: gr.update(visible=value == "paper"), inputs=scope, outputs=paper_select)
         library_search_box.input(library_search, inputs=library_search_box, outputs=[library_cards, library_meta])
-        upload_btn.click(ingest, inputs=[upload_file, source_url], outputs=[upload_status, library_cards, library_meta])
+        upload_btn.click(ingest, inputs=[upload_file, source_url], outputs=[upload_status, library_cards, library_meta, paper_select])
     return demo
 
 
