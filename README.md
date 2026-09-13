@@ -121,3 +121,4 @@ The API tests use fake services and therefore do not download ML models, initial
 ## Security
 
 Do not place API keys in source control, `.env.example`, Docker images, or ZIP archives. The provided project contains only the empty key field in `.env.example`.
+[README.md](https://github.com/user-attachments/files/32160100/README.md)
