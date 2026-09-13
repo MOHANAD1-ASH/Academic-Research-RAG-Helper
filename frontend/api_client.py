@@ -74,12 +74,15 @@ def list_papers() -> list[dict[str, Any]]:
         raise ResearchAPIError("The backend returned an invalid /papers response.") from exc
 
 
-def ingest_pdf(path: str) -> dict[str, Any]:
+def ingest_pdf(path: str, source_url: str = "") -> dict[str, Any]:
     try:
         with open(path, "rb") as handle:
             response = httpx.post(
                 f"{_base_url()}/papers/ingest",
-                files={"file": (Path(path).name, handle, "application/pdf")},
+                files={
+                    "file": (Path(path).name, handle, "application/pdf"),
+                    "source_url": (None, source_url.strip()),
+                },
                 timeout=600.0,
             )
         response.raise_for_status()

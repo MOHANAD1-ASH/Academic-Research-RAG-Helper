@@ -33,7 +33,8 @@ def normalize(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "title": str(item.get("title") or "Untitled paper"),
             "authors": authors,
             "year": item.get("year") or "—",
-            "url": item.get("url") or item.get("pdf_url") or item.get("source_url") or "",
+            "url": item.get("url") or item.get("source_url") or "",
+            "pdf_url": item.get("pdf_url") or "",
         })
     return sorted(result, key=lambda p: p["title"].lower())
 
@@ -79,9 +80,17 @@ def cards(items: list[dict[str, Any]]) -> str:
     out = []
     for p in items:
         authors = ", ".join(p["authors"][:2]) or "Academic research corpus"
-        url = api_url(str(p["url"]))
-        link = f"<a href='{esc(url)}' target='_blank' rel='noopener'>Open source ↗</a>" if url else "<span>Source link unavailable</span>"
-        out.append(f"<article class='paper-card'><div class='paper-top'><b>RESEARCH PAPER</b><span>{esc(p['year'])}</span></div><h3>{esc(p['title'])}</h3><p>{esc(authors)}</p><div class='paper-foot'><span>Indexed in corpus</span>{link}</div></article>")
+        source_url = api_url(str(p["url"]))
+        pdf_url = api_url(str(p["pdf_url"]))
+        if source_url:
+            links = f"<a href='{esc(source_url)}' target='_blank' rel='noopener'>Open source ↗</a>"
+        else:
+            links = "<span>Local upload</span>"
+        if pdf_url:
+            links += f" <a href='{esc(pdf_url)}' target='_blank' rel='noopener'>Open PDF ↗</a>"
+        else:
+            links += " <span>PDF unavailable</span>"
+        out.append(f"<article class='paper-card'><div class='paper-top'><b>RESEARCH PAPER</b><span>{esc(p['year'])}</span></div><h3>{esc(p['title'])}</h3><p>{esc(authors)}</p><div class='paper-foot'><span>Indexed in corpus</span><span>{links}</span></div></article>")
     return "<div class='paper-grid'>" + "".join(out) + "</div>"
 
 
@@ -93,6 +102,12 @@ def library_search(query: str):
     q = (query or "").lower().strip()
     visible = [p for p in PAPERS if q in p["title"].lower() or q in " ".join(p["authors"]).lower()]
     return cards(visible), f"Showing {len(visible)} of {len(PAPERS)} papers"
+
+
+def refresh_library():
+    global PAPERS
+    PAPERS = load_papers()
+    return cards(PAPERS), count_label()
 
 
 def ask(question: str, history: list[dict[str, str]], scope: str, paper_id: str):
@@ -121,20 +136,20 @@ def clear_chat():
     return [], "Sources will appear here after you ask a question.", "<div class='trace-empty'>Evidence will appear after your first question.</div>", ""
 
 
-def ingest(path: str | None):
+def ingest(path: str | None, source_url: str):
     if not path:
         raise gr.Error("Choose a PDF before uploading.")
     try:
-        result = ingest_pdf(path)
+        result = ingest_pdf(path, source_url)
     except ResearchAPIError as exc:
-        return f"<div class='status error'><b>Upload could not be completed</b><span>{esc(exc)}</span></div>"
+        return f"<div class='status error'><b>Upload could not be completed</b><span>{esc(exc)}</span></div>", *refresh_library()
     if result.get("already_indexed"):
         msg = result.get("message") or "This paper already exists in your library."
-        return f"<div class='status duplicate'><b>Already in your library</b><span>{esc(msg)}</span></div>"
+        return f"<div class='status duplicate'><b>Already in your library</b><span>{esc(msg)}</span></div>", *refresh_library()
     msg = result.get("message") or "The paper was indexed and is ready for research questions."
     if result.get("ok", True):
-        return f"<div class='status success'><b>Paper approved and indexed</b><span>{esc(msg)}</span></div>"
-    return f"<div class='status error'><b>Ingestion needs attention</b><span>{esc(msg)}</span></div>"
+        return f"<div class='status success'><b>Paper approved and indexed</b><span>{esc(msg)}</span></div>", *refresh_library()
+    return f"<div class='status error'><b>Ingestion needs attention</b><span>{esc(msg)}</span></div>", *refresh_library()
 
 
 CSS = """
@@ -200,6 +215,7 @@ def build_app() -> gr.Blocks:
                     with gr.Row(elem_classes="upload-grid"):
                         with gr.Column(elem_classes="panel"):
                             upload_file = gr.File(label="Research paper PDF", file_types=[".pdf"], type="filepath", elem_classes="upload-drop")
+                            source_url = gr.Textbox(label="Paper source URL (optional)", placeholder="https://doi.org/... or https://arxiv.org/...", info="Save the publisher, DOI, arXiv, or repository link together with the local PDF.")
                             upload_btn = gr.Button("Upload and index paper  →", elem_classes="btn primary upload-btn")
                             upload_status = gr.HTML("<div class='status'><b>Ready for a paper</b><span>PDF files are checked before they enter your library.</span></div>")
                         with gr.Column(elem_classes="panel"):
@@ -212,7 +228,7 @@ def build_app() -> gr.Blocks:
         clear_btn.click(clear_chat, outputs=[chatbot, sources, trace, question])
         scope.change(lambda value: gr.update(visible=value == "paper"), inputs=scope, outputs=paper_select)
         library_search_box.input(library_search, inputs=library_search_box, outputs=[library_cards, library_meta])
-        upload_btn.click(ingest, inputs=upload_file, outputs=[upload_status])
+        upload_btn.click(ingest, inputs=[upload_file, source_url], outputs=[upload_status, library_cards, library_meta])
     return demo
 
 

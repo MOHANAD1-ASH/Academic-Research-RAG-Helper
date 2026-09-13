@@ -170,12 +170,39 @@ class IngestionService:
         tmp.write_text(json.dumps(papers, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(path)
 
+    def _write_chunks_only(self, chunks: list[dict[str, Any]]) -> None:
+        path = self.settings.artifacts_dir / "chunks.json"
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(chunks, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+
     def _reconcile_library(self) -> None:
         """Make papers.json agree with chunks.json before serving the API."""
         by_id = self._paper_map()
         changed = False
+        for paper in self.retrieval.papers_meta:
+            paper_id = str(paper.get("paperId") or paper.get("paper_id") or "")
+            if not paper_id:
+                continue
+            pdf = Path(str(paper.get("pdf_path") or "")) if paper.get("pdf_path") else self.pdfs_dir / f"{paper_id}.pdf"
+            if not pdf.is_file():
+                matches = list(self.pdfs_dir.glob(f"{paper_id}*.pdf"))
+                pdf = matches[0] if matches else None
+            if pdf is not None:
+                pdf_url = f"/papers/{paper_id}/pdf"
+                if paper.get("pdf_path") != str(pdf.resolve()) or paper.get("pdf_url") != pdf_url:
+                    paper["pdf_path"] = str(pdf.resolve())
+                    paper["pdf_url"] = pdf_url
+                    changed = True
+                for chunk in self.retrieval.chunks:
+                    if str(chunk.get("paper_id")) == paper_id and chunk.get("pdf_url") != pdf_url:
+                        chunk["pdf_url"] = pdf_url
+                        changed = True
         missing_ids = sorted({str(c.get("paper_id")) for c in self.retrieval.chunks if c.get("paper_id")} - set(by_id))
         if not missing_ids:
+            if changed:
+                self._write_papers_only(self.retrieval.papers_meta)
+                self._write_chunks_only(self.retrieval.chunks)
             return
 
         for paper_id in missing_ids:
@@ -213,6 +240,7 @@ class IngestionService:
 
         if changed:
             self._write_papers_only(self.retrieval.papers_meta)
+            self._write_chunks_only(self.retrieval.chunks)
 
     def _rebuild_bm25(self) -> None:
         from rank_bm25 import BM25Okapi
@@ -221,8 +249,15 @@ class IngestionService:
         self.retrieval.paper_ids = {str(c.get("paper_id")) for c in self.retrieval.chunks if c.get("paper_id")}
         self.retrieval.bm25 = BM25Okapi([tokenize(t) for t in self.retrieval.chunk_texts])
 
-    def _duplicate_response(self, paper: dict[str, Any], reason: str) -> dict[str, Any]:
+    def _duplicate_response(self, paper: dict[str, Any], reason: str, source_url: str = "") -> dict[str, Any]:
         pid = str(paper.get("paperId") or paper.get("paper_id") or "")
+        if source_url and paper.get("url") != source_url:
+            paper["url"] = source_url
+            self._write_papers_only(self.retrieval.papers_meta)
+            for chunk in self.retrieval.chunks:
+                if str(chunk.get("paper_id")) == pid:
+                    chunk["source_url"] = source_url
+            self._write_chunks_only(self.retrieval.chunks)
         return {
             "ok": True,
             "message": f'Already indexed: "{paper.get("title") or "Untitled paper"}". {reason}',
@@ -233,7 +268,7 @@ class IngestionService:
             "repaired": False,
         }
 
-    def _recover_duplicate(self, sha: str) -> dict[str, Any] | None:
+    def _recover_duplicate(self, sha: str, source_url: str = "") -> dict[str, Any] | None:
         existing_pdf = self._pdf_for_hash(sha)
         if existing_pdf is None:
             return None
@@ -244,7 +279,7 @@ class IngestionService:
             if pdf_path and Path(pdf_path).is_file():
                 try:
                     if hashlib.sha256(Path(pdf_path).read_bytes()).hexdigest() == sha:
-                        return self._duplicate_response(paper, "No new chunks were created.")
+                        return self._duplicate_response(paper, "No new chunks were created.", source_url)
                 except OSError:
                     pass
 
@@ -327,11 +362,11 @@ class IngestionService:
                         child.unlink(missing_ok=True)
                     directory.rmdir()
 
-    def ingest(self, data: bytes, filename: str) -> dict[str, Any]:
+    def ingest(self, data: bytes, filename: str, source_url: str = "") -> dict[str, Any]:
         with self._lock:
-            return self._ingest_locked(data, filename)
+            return self._ingest_locked(data, filename, source_url.strip())
 
-    def _ingest_locked(self, data: bytes, filename: str) -> dict[str, Any]:
+    def _ingest_locked(self, data: bytes, filename: str, source_url: str = "") -> dict[str, Any]:
         if not data or not filename.lower().endswith(".pdf"):
             return {"ok": False, "message": "Only PDF files are accepted."}
         if len(data) < MIN_PDF_BYTES:
@@ -339,7 +374,7 @@ class IngestionService:
 
         sha = hashlib.sha256(data).hexdigest()
         if sha in self._existing_pdf_hashes():
-            recovered = self._recover_duplicate(sha)
+            recovered = self._recover_duplicate(sha, source_url)
             if recovered:
                 return recovered
             return {
@@ -368,10 +403,10 @@ class IngestionService:
             existing_ids = {str(p.get("paperId") or p.get("paper_id")) for p in self.retrieval.papers_meta}
             existing_dois = {str(p.get("doi")).lower() for p in self.retrieval.papers_meta if p.get("doi")}
             if arxiv_id and arxiv_id in existing_ids:
-                return self._duplicate_response(self._find_paper(arxiv_id) or {"paperId": arxiv_id, "title": arxiv_id}, "Matched by arXiv ID.")
+                return self._duplicate_response(self._find_paper(arxiv_id) or {"paperId": arxiv_id, "title": arxiv_id}, "Matched by arXiv ID.", source_url)
             if doi and doi.lower() in existing_dois:
                 paper = next(p for p in self.retrieval.papers_meta if str(p.get("doi")).lower() == doi.lower())
-                return self._duplicate_response(paper, "Matched by DOI.")
+                return self._duplicate_response(paper, "Matched by DOI.", source_url)
 
             with fitz.open(str(tmp)) as doc:
                 meta = doc.metadata or {}
@@ -382,7 +417,7 @@ class IngestionService:
             normalized = _norm_title(title)
             if normalized and normalized in self._existing_titles():
                 paper = next(p for p in self.retrieval.papers_meta if _norm_title(p.get("title") or "") == normalized)
-                return self._duplicate_response(paper, "Matched by normalized title.")
+                return self._duplicate_response(paper, "Matched by normalized title.", source_url)
 
             paper_id = arxiv_id or f"up{sha[:12]}"
             year_match = re.search(r"D:(\d{4})", meta.get("creationDate") or "")
@@ -397,7 +432,7 @@ class IngestionService:
                 "doi": doi,
                 "year": year,
                 "authors": authors,
-                "url": f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else "",
+                "url": source_url or (f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else ""),
                 "openAccessPdf": {"url": ""},
                 "citationCount": 0,
                 "venue": "Uploaded PDF",
@@ -447,6 +482,7 @@ class IngestionService:
                 final_path = self.pdfs_dir / f"{re.sub(r'[^a-zA-Z0-9._-]+', '_', paper_id)[:60]}_{sha[:8]}.pdf"
             tmp.replace(final_path)
             paper["pdf_path"] = str(final_path.resolve())
+            paper["pdf_url"] = f"/papers/{paper_id}/pdf"
             combined_chunks = old_chunks + new_chunks
             combined_papers = old_papers + [paper]
 

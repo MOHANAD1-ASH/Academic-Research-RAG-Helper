@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -54,6 +56,7 @@ def get_paper_pdf(paper_id: str, request: Request):
 @router.post("/ingest", response_model=IngestResponse)
 async def ingest_paper(
     file: UploadFile = File(...),
+    source_url: str = Form(default=""),
     ingestion: IngestionService = Depends(get_ingestion_service),
 ) -> IngestResponse:
     filename = file.filename or ""
@@ -66,7 +69,7 @@ async def ingest_paper(
         raise HTTPException(status_code=413, detail=f"PDF exceeds the {settings.max_upload_mb} MB upload limit.")
     # Ingestion is CPU-heavy (PDF parsing, embeddings, Chroma, BM25). Run it off
     # FastAPI's event loop so the server remains responsive while indexing.
-    result = await run_in_threadpool(ingestion.ingest, data, filename or "upload.pdf")
+    result = await run_in_threadpool(ingestion.ingest, data, filename or "upload.pdf", source_url.strip())
     if not result["ok"]:
         raise HTTPException(status_code=400, detail=result["message"])
     return IngestResponse(**result)
